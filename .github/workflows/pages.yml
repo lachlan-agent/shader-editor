@@ -24,7 +24,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # The calculator test cases are checked against numpy (test/cases.py).
+      # The calculator test cases are checked against numpy and sympy
+      # (test/cases.py, run with python3 -I, so they must sit in the
+      # interpreter's own site-packages, not the user site).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: pip install numpy sympy
       - run: npm test
       - run: npm run build
