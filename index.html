@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+<title>GLSL Shader Editor</title>
+<meta name="description" content="GLSL fragment shader editor with a live WebGL2 preview, in the style of Shadertoy.">
+<meta name="theme-color" content="#0d0f14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shaders">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg0:      #0d0f14;
+  --bg1:      #13161e;
+  --bg2:      #1a1e28;
+  --bg3:      #222736;
+  --border:   #2a2f3d;
+  --accent:   #5c8af7;
+  --accent2:  #7c5cf7;
+  --err:      #e06c75;
+  --warn:     #e5c07b;
+  --ok:       #98c379;
+  --text:     #abb2bf;
+  --text-dim: #5c6370;
+  --text-hi:  #ffffff;   /* hover/active text: white on dark themes, black on light ones (set by applyTheme) */
+  --preview:  #000000;
+  --hl:       rgba(255,255,255,0.03);
+  --sel:      rgba(92,138,247,0.22);
+  --glass-a: 0.6;        /* floating editor background opacity (Options → Editor background) */
+  --glass-blur: 8px;     /* its frosting */
+  --divider-w: 5px;
+  --toolbar-h: 42px;
+  --statusbar-h: 28px;
+}
+
+html, body {
+  height: 100%;
+  height: 100dvh;
+  background: var(--bg0);
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  overflow: hidden;
+  user-select: none;
+}
+/* viewport-fit=cover lets the page run under notches; keep the UI out of them. */
+body {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* ── Toolbar ─────────────────────────────────────────────── */
+#toolbar {
+  height: var(--toolbar-h);
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+#toolbar .logo {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  margin-right: 4px;
+}
+
+.sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+
+.btn {
+  height: 26px;
+  padding: 0 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg2); border-color: var(--accent); color: var(--text-hi); }
+.btn.active { border-color: var(--accent); color: var(--accent); }
+#btn-autocompile { min-width: 64px; justify-content: center; }   /* "Auto" and "Manual" take the same room */
+.btn.recording { border-color: var(--err); color: var(--err); animation: rec-pulse 1.2s ease-in-out infinite; }
+@keyframes rec-pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+.btn svg { flex-shrink: 0; }
+
+.pill {
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+}
+.pill.ok  { background: rgba(152,195,121,0.15); color: var(--ok); }
+.pill.err { background: rgba(224,108,117,0.15); color: var(--err); }
+
+/* Shader name button: a dot marks unsaved changes */
+#btn-shaders { max-width: 220px; }
+#btn-shaders .chev { color: var(--text-dim); font-size: 9px; }
+#btn-shader-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#btn-shaders .dirty-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warn); flex-shrink: 0; display: none;
+}
+#btn-shaders.dirty .dirty-dot { display: block; }
+#btn-shaders.flash { border-color: var(--ok); color: var(--ok); }
+#toolbar .spacer { margin-left: auto; }
+
+/* ── Main layout ─────────────────────────────────────────── */
+#main {
+  display: flex;
+  height: calc(100vh - var(--toolbar-h));
+  height: calc(100dvh - var(--toolbar-h)
+               - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  overflow: hidden;
+}
+
+/* Swapped layout: preview first, editor second */
+#main.swapped { flex-direction: row-reverse; }
+
+/* ── Editor pane ─────────────────────────────────────────── */
+#editor-pane {
+  display: flex;
+  flex-direction: column;
+  width: 50%;
+  min-width: 200px;
+  background: var(--bg1);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+#editor-wrap {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ── Pass tabs ───────────────────────────────────────────── */
+#pass-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 30px;
+  padding: 0 6px;
+  background: var(--bg0);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#pass-tabs::-webkit-scrollbar { display: none; }
+
+.pass-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.pass-tab:hover { color: var(--text); }
+.pass-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.pass-tab.has-error { color: var(--err); }
+.pass-tab.has-error.active { border-bottom-color: var(--err); }
+
+.pass-close {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.45;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px;
+  font-family: inherit;
+}
+.pass-close:hover { opacity: 1; color: var(--err); }
+
+.pass-add {
+  align-self: center;
+  margin-left: 4px;
+  padding: 0 8px;
+  height: 20px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.pass-add:hover { color: var(--accent); border-color: var(--accent); }
+#btn-editor-undock { margin-left: auto; align-self: center; }
+/* Floating, the bar's Dock button is the way back; the undock buttons hide. */
+#editor-pane.floating #btn-editor-undock { display: none; }
+
+/* ── Editor glass (Options → Editor background) ──────────── */
+/* Floating, the editor's backgrounds can go translucent so the shader shows
+   through; the text keeps its colour. --glass-a is the background opacity,
+   --glass-blur the frosting; both set by applyEditorGlass in main.ts. */
+#editor-pane.floating.glass {
+  background: color-mix(in srgb, var(--bg1) calc(var(--glass-a) * 100%), transparent);
+}
+#editor-pane.floating.glass-frost { backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur)); }
+#editor-pane.floating.glass > .float-bar,
+#editor-pane.floating.glass #pass-tabs {
+  background: color-mix(in srgb, var(--bg0) calc(var(--glass-a) * 100%), transparent);
+}
+#editor-pane.floating.glass .cm-editor,
+#editor-pane.floating.glass .cm-editor .cm-gutters { background: transparent !important; }
+#editor-pane.floating.glass #error-log {
+  background: color-mix(in srgb, color-mix(in srgb, var(--err) 10%, var(--bg0)) calc(var(--glass-a) * 100%), transparent);
+}
+
+.cm-editor {
+  height: 100%;
+  font-size: 13px;
+}
+.cm-scroller { overflow: auto !important; }
+
+/* CodeMirror custom overrides */
+.cm-editor .cm-content { padding: 8px 0; }
+.cm-editor.cm-focused { outline: none; }
+.cm-editor .cm-cursor { border-left-color: var(--accent) !important; }
+.cm-editor .cm-activeLine { background: var(--hl) !important; }
+.cm-editor .cm-activeLineGutter { background: var(--hl) !important; }
+.cm-editor .cm-gutters {
+  background: var(--bg1) !important;
+  border-right: 1px solid var(--border) !important;
+  color: var(--text-dim) !important;
+}
+.cm-editor .cm-lineNumbers .cm-gutterElement { min-width: 36px; padding: 0 6px 0 4px; }
+.cm-editor .cm-selectionBackground { background: var(--sel) !important; }
+.cm-editor .cm-matchingBracket { background: var(--sel); outline: none; }
+
+/* vim mode indicator */
+.cm-vim-panel {
+  background: var(--bg2) !important;
+  border-top: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  padding: 2px 8px !important;
+}
+
+/* ── Error banner (above the code; the last good build keeps running) ── */
+#error-log {
+  display: none;
+  max-height: 140px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--err) 10%, var(--bg0));
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--err);
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--err);
+  flex-shrink: 0;
+  font-family: inherit;
+}
+#error-log.has-errors { display: block; }
+#error-title { font-weight: 600; font-size: 11px; margin-bottom: 2px; }
+#error-body { white-space: pre-wrap; opacity: 0.9; }
+.err-link { cursor: pointer; }
+.err-link:hover { text-decoration: underline; color: var(--text-hi); }
+#error-log::-webkit-scrollbar { width: 4px; }
+#error-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Lint marks for the lines the compiler named */
+.cm-editor .cm-lintRange-error { background-image: none; border-bottom: 1px dotted var(--err); }
+.cm-editor .cm-lintRange-warning { background-image: none; border-bottom: 1px dotted var(--warn); }
+.cm-editor .cm-gutter-lint { width: 10px; }
+.cm-editor .cm-lint-marker { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; }
+.cm-editor .cm-lint-marker-error { content: none; background: var(--err); }
+.cm-editor .cm-lint-marker-warning { content: none; background: var(--warn); }
+.cm-editor .cm-lint-marker > svg { display: none; }
+.cm-editor .cm-tooltip-lint { font-family: inherit; font-size: 11.5px; }
+.cm-editor .cm-diagnostic-error { border-left-color: var(--err); }
+.cm-editor .cm-diagnostic-warning { border-left-color: var(--warn); }
+
+/* GLSL reference card (hover, K in vim normal mode, or F1) */
+.glsl-doc {
+  max-width: 360px;
+  padding: 7px 10px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  user-select: text;
+}
+.gd-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.gd-name { color: var(--accent); font-weight: 600; }
+.gd-kind { color: var(--text-dim); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+.gd-sig {
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--warn);
+  white-space: pre-wrap;
+  margin: 0 0 2px;
+}
+.gd-body { color: var(--text); margin-top: 5px; }
+
+/* ── Divider ─────────────────────────────────────────────── */
+#divider {
+  width: var(--divider-w);
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  transition: background 0.15s;
+  z-index: 10;
+}
+#divider:hover, #divider.dragging { background: var(--accent); }
+#divider { touch-action: none; }
+/* widen touch hit area without changing visual width */
+#divider::after {
+  content: '';
+  position: absolute;
+  inset: 0 -6px;
+}
+
+/* ── Dock ────────────────────────────────────────────────── */
+/* The split's second pane: docked windows stack in it, top to bottom. */
+#dock {
+  flex: 1;
+  min-width: 100px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--preview);
+}
+#main.dock-empty #dock { display: none; }
+
+#glcanvas { position: fixed; left: 0; top: 0; width: 1px; height: 1px; z-index: -1; pointer-events: none; }
+
+/* ── Floating (undocked) editor pane ─────────────────────── */
+/* The editor leaves the flex split and becomes a fixed window: a grab bar
+   on top, resize handles on every edge, inline left/top/width/height from JS. */
+.float-bar, .fh { display: none; }
+
+#main > .floating {
+  position: fixed;
+  z-index: 50;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 12px 40px rgba(0,0,0,0.55);
+}
+#editor-pane.floating  { min-width: 280px; min-height: 160px; }
+/* Only a fresh undock pops in; a restored one on page load appears in place. */
+#main > .floating.pop, .win.floating.pop { animation: float-in 0.18s cubic-bezier(.2,.8,.2,1); }
+#main > .floating.moving { transition: none; }
+#main > .floating:not(.moving) { transition: box-shadow 0.15s; }
+#main > .floating.moving, .win.floating.moving { box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 20px 56px rgba(0,0,0,0.65); }
+@keyframes float-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+#main > .floating > .float-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: grab;
+  touch-action: none;
+  flex-shrink: 0;
+}
+#main > .floating.moving > .float-bar { cursor: grabbing; }
+.float-bar .grip-dots {
+  width: 14px; height: 10px;
+  background: radial-gradient(circle, var(--text-dim) 1px, transparent 1.2px) 0 0 / 5px 5px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.float-bar .float-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.float-btn {
+  height: 20px;
+  padding: 0 6px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.float-btn:hover { color: var(--text); background: var(--bg3); border-color: var(--border); }
+
+/* Edge/corner resize handles: invisible, generous hit areas (inside the
+   pane, since it clips overflow for its rounded corners). */
+#main > .floating .fh { display: block; position: absolute; z-index: 310; touch-action: none; }   /* above CodeMirror's panels (300) */
+.fh-n  { top: 0;    left: 8px;  right: 8px;   height: 8px; cursor: ns-resize; }
+.fh-s  { bottom: 0; left: 8px;  right: 8px;   height: 8px; cursor: ns-resize; }
+.fh-w  { left: 0;   top: 8px;   bottom: 8px;  width: 8px;  cursor: ew-resize; }
+.fh-e  { right: 0;  top: 8px;   bottom: 8px;  width: 8px;  cursor: ew-resize; }
+.fh-nw { top: 0;    left: 0;   width: 14px; height: 14px; cursor: nwse-resize; }
+.fh-se { bottom: 0; right: 0;  width: 14px; height: 14px; cursor: nwse-resize; }
+.fh-ne { top: 0;    right: 0;  width: 14px; height: 14px; cursor: nesw-resize; }
+.fh-sw { bottom: 0; left: 0;   width: 14px; height: 14px; cursor: nesw-resize; }
+/* A small visible grip in the bottom-right so the affordance is discoverable. */
+.fh-se::after {
+  content: '';
+  position: absolute;
+  right: 5px; bottom: 5px;
+  width: 7px; height: 7px;
+  border-right: 2px solid var(--text-dim);
+  border-bottom: 2px solid var(--text-dim);
+  border-radius: 0 0 2px 0;
+  opacity: 0.6;
+}
+#main > .floating:hover .fh-se::after { opacity: 1; }
+
+/* Snap guides: a line where a dragged window edge has stuck. */
+.snap-guide { display: none; position: fixed; z-index: 48; background: var(--accent); opacity: 0.6; pointer-events: none; }
+.snap-guide.snap-x { top: 0; bottom: 0; width: 1px; }
+.snap-guide.snap-y { left: 0; right: 0; height: 1px; }
+
+/* ── Windows ─────────────────────────────────────────────── */
+/* One kind of window for everything: a bar (pass/tool selector, dock, close),
+   a canvas the GL frame is copied into or a tool pad, and for passes a status
+   bar. Docked, it stacks in #dock; floating, it is a fixed box on body. */
+.win {
+  display: flex;
+  flex-direction: column;
+  background: var(--preview);
+  overflow: hidden;
+}
+.win.floating {
+  position: fixed;
+  z-index: 49;
+  min-width: 160px;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 12px 40px rgba(0,0,0,0.55);
+}
+.win.docked { flex: 1 1 0; min-height: 0; }
+.win.docked + .win.docked { border-top: 1px solid var(--border); }
+.win .win-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  touch-action: none;
+  flex-shrink: 0;
+}
+.win.docked .win-bar { cursor: default; }
+.win.docked .win-bar .grip-dots { display: none; }
+.win.moving .win-bar { cursor: grabbing; }
+.win .win-bar .pass-select { margin-left: 0; }
+.win-kind { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); white-space: nowrap; }
+.win.w-lt-300 .win-kind { display: none; }
+.win .win-bar .spacer { margin-left: auto; }
+.win-canvas-wrap { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.win-canvas-wrap canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+.win.inspecting .win-canvas-wrap canvas { cursor: crosshair; }
+.win .view-body { display: none; flex: 1; min-height: 0; overflow: auto; background: var(--bg1); user-select: text; }
+.win.tool .win-canvas-wrap, .win.tool .win-status { display: none; }
+.win.tool .view-body { display: flex; flex-direction: column; }
+.win.tool { background: var(--bg1); }
+.win .view-body > #uni-body { flex: 1; }
+.win.floating .fh { display: block; position: absolute; z-index: 310; touch-action: none; }
+.win .fh-se::after { opacity: 0.6; }
+.win:hover .fh-se::after { opacity: 1; }
+
+/* Fullscreen takes over the window: no chrome but the status bar. */
+.win:fullscreen { border: none; border-radius: 0; box-shadow: none; animation: none; }
+.win:fullscreen .win-bar, .win:fullscreen .fh { display: none; }
+
+/* Pixel inspector readout, bottom-left of the probed window. */
+.px-info {
+  display: none; position: absolute; left: 8px; bottom: 8px; z-index: 3;
+  align-items: flex-start; gap: 8px; padding: 6px 8px;
+  background: color-mix(in srgb, var(--bg1) 85%, transparent); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 10.5px; line-height: 1.45; color: var(--text); cursor: copy; user-select: none;
+}
+.px-info.open { display: flex; }
+.px-info.copied { border-color: var(--accent); }
+.px-info .px-swatch { width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--border); flex: none; margin-top: 2px; }
+.px-info .px-text { margin: 0; font-family: inherit; font-variant-numeric: tabular-nums; }
+
+/* ── Scratch pads ────────────────────────────────────────── */
+.pad { flex: 1; min-height: 0; display: flex; flex-direction: column; font-size: 12px; }
+.pad textarea, .pad input[type="text"] {
+  background: none; border: none; outline: none; color: var(--text);
+  font-family: inherit; font-size: 12px; line-height: 1.5;
+}
+
+.pad-calc .calc-log { flex: 1; overflow-y: auto; padding: 6px 10px 0; }
+.calc-row { display: flex; gap: 10px; align-items: baseline; line-height: 1.6; }
+/* Results break at spaces (matrix commas) before they break inside a number;
+   the source gives way first. A result that still cannot fit scrolls the log. */
+.calc-src { flex: 1 1 auto; min-width: 0; color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+.calc-src:hover { color: var(--text); }
+.calc-out { flex: 0 1 auto; margin-left: auto; color: var(--ok); text-align: right; font-variant-numeric: tabular-nums; white-space: pre-wrap; overflow-wrap: break-word; cursor: copy; }
+.calc-row.bad .calc-out { color: var(--err); cursor: default; }
+.pad-calc .calc-in { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px 10px; border-top: 1px solid var(--border); }
+.calc-prompt { color: var(--accent); font-weight: 600; }
+.pad-calc input { flex: 1; min-width: 0; }
+.calc-help-btn { font-weight: 600; }
+.calc-help-btn.active { color: var(--accent); }
+.pad-calc .calc-help { display: none; flex: 1; overflow-y: auto; padding: 4px 10px 8px; font-size: 11px; }
+.pad-calc.show-help .calc-help { display: block; }
+.pad-calc.show-help .calc-log { display: none; }
+.calc-help-title { color: var(--accent); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; margin: 8px 0 3px; }
+.calc-help-title:first-child { margin-top: 2px; }
+.calc-help-row { display: grid; grid-template-columns: minmax(120px, 42%) 1fr; gap: 0 10px; line-height: 1.6; cursor: pointer; border-radius: 3px; padding: 0 4px; margin: 0 -4px; }
+.calc-help-row:hover { background: var(--hl); }
+.calc-help-sig { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.calc-help-doc { color: var(--text-dim); }
+/* A narrow window stacks the description under the signature. */
+.pad-calc { container-type: inline-size; }
+@container (max-width: 300px) {
+  .calc-help-row { grid-template-columns: 1fr; padding-bottom: 3px; }
+  .calc-help-doc { padding-left: 10px; line-height: 1.4; }
+}
+
+/* Math calc: result rendered at the right of each line. */
+.math-line .math-formula { flex: none; min-width: 0; }
+.math-line .math-result { margin-left: auto; padding-left: 14px; display: flex; align-items: center; gap: 6px; color: var(--text-dim); flex: none; }   /* sized by fitRow in eeltex.ts */
+.math-line .math-result svg { opacity: 0.85; }
+.math-line .math-result .eq { color: var(--text-dim); font-size: 14px; }
+.math-line .math-result.err { flex: 0 1 auto; min-width: 0; font-size: 10px; line-height: 1.3; color: var(--err); opacity: 0.8; text-align: right; overflow-wrap: anywhere; }
+.math-line.active .math-result svg { opacity: 1; }
+
+/* Graph: expression rows above a canvas. */
+.pad-graph .graph-rows { flex: none; max-height: 45%; overflow-y: auto; padding: 4px 6px 4px 8px; border-bottom: 1px solid var(--border); }
+.graph-row { display: flex; align-items: center; gap: 6px; line-height: 1.6; border-radius: 3px; }
+.graph-row input { flex: 1; min-width: 0; }
+.graph-row.bad input { color: var(--err); }
+.graph-swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; background: transparent; border: 1px solid var(--border); }
+.graph-row.curve .graph-swatch { border-color: transparent; }
+.graph-val { color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.graph-row .graph-del { opacity: 0; }
+.graph-row:hover .graph-del, .graph-row:focus-within .graph-del { opacity: 1; }
+.graph-add { margin-left: 14px; }
+.pad-graph .graph-plot { position: relative; flex: 1; min-height: 80px; background: var(--bg1); overflow: hidden; }
+.pad-graph canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+.graph-hud { position: absolute; top: 6px; right: 6px; padding: 3px 6px; font-size: 11px; line-height: 1.4; white-space: pre; color: var(--text); background: color-mix(in srgb, var(--bg2) 85%, transparent); border: 1px solid var(--border); border-radius: 4px; pointer-events: none; font-variant-numeric: tabular-nums; }
+.graph-hud.left { right: auto; left: 6px; }
+.graph-tools { position: absolute; bottom: 4px; right: 4px; display: flex; gap: 2px; opacity: 0.5; }
+.graph-tools:hover { opacity: 1; }
+.graph-tools .float-btn.active { color: var(--accent); }
+
+.pad-image { position: relative; align-items: center; justify-content: center; background: var(--preview); outline: none; }
+.pad-image img { display: none; max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; }
+.pad-image.has-image img { display: block; }
+.pad-image .pad-drop { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11px; text-align: center; padding: 16px; }
+.pad-image.has-image .pad-drop { display: none; }
+.pad-image.over { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.pad-image .pad-clear { position: absolute; top: 6px; right: 6px; display: none; background: color-mix(in srgb, var(--bg1) 80%, transparent); }
+.pad-image.has-image:hover .pad-clear { display: flex; }
+
+.math-stage {
+  flex: 1; min-height: 60px; position: relative; display: flex; flex-direction: column;
+  padding: 10px 14px; overflow: auto; cursor: text; outline: none; color: var(--text);
+}
+.math-lines { display: flex; flex-direction: column; gap: 6px; }
+.math-line {
+  position: relative;   /* hosts the hidden key sink, see eeltex.ts */
+  min-height: 28px; padding: 4px 6px; border-radius: 4px; border-left: 2px solid transparent;
+  display: flex; align-items: center;
+}
+.math-line.active { border-left-color: var(--accent); background: var(--hl); }
+.math-line.empty { min-height: 32px; }
+.math-line svg { display: block; flex: none; max-width: none; overflow: visible; }
+.math-keys { position: absolute; opacity: 0; width: 1px; height: 1px; padding: 0; border: 0; resize: none; }
+.math-loading { color: var(--text-dim); font-size: 11px; margin: auto; }
+.math-stage .ov rect { vector-effect: non-scaling-stroke; }
+.math-stage .ov .selection { fill: color-mix(in srgb, var(--accent) 28%, transparent); }
+.math-stage .ov .caret { fill: var(--accent); animation: blink 1.06s steps(1) infinite; }
+/* An idle pad shows only the maths: no caret, no empty-field boxes, no source. */
+.math-stage:not(:focus-within) .ov .caret { display: none; }
+.math-stage:not(:focus-within) path[fill="#808080"] { display: none; }
+.math-line:not(.active) .ov { display: none; }
+@keyframes blink { 50% { opacity: 0; } }
+.math-status { min-height: 14px; padding: 0 10px; font-size: 10px; color: var(--text-dim); }
+.math-status.bad { color: var(--err); }
+.math-src {
+  resize: none; overflow: hidden; padding: 6px 10px 8px; border-top: 1px solid var(--border) !important;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim) !important;
+}
+.pad-math.no-source .math-src, .pad-math:not(:focus-within):not(:hover) .math-src { display: none; }
+.math-src:focus { color: var(--text) !important; }
+.math-src.bad { color: var(--err) !important; }
+
+/* With nothing docked, or the editor floating, the other side takes the whole split. */
+#main.dock-empty #divider, #main.editor-floating #divider { display: none; }
+#main.dock-empty #editor-pane:not(.floating) { width: auto !important; flex: 1; }
+#main.dock-empty.editor-floating { position: relative; }
+#main.dock-empty.editor-floating::after {
+  content: 'Nothing docked — dock a window or the editor from its bar';
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); opacity: 0.6;
+  pointer-events: none;
+}
+
+/* ── Uniform table (lives inside a view window) ──────────── */
+#uni-body { padding: 6px 10px 8px; font-size: 10.5px; color: var(--text-dim); }
+/* Controls: `const float x = 1.0; // @slider(0, 2)` lines, live from here. */
+.ctl-group { color: var(--accent); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; margin: 4px 0 2px; }
+.ctl-row { display: grid; grid-template-columns: minmax(60px, 30%) 1fr; gap: 0 8px; align-items: center; min-height: 22px; }
+.ctl-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ctl-lane { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ctl-lane input[type="range"] { flex: 1; min-width: 0; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.ctl-val { width: 4.5em; text-align: right; color: var(--ok); font-variant-numeric: tabular-nums; cursor: text; flex: none; }
+.ctl-lane input[type="number"] { width: 5.5em; height: 18px; padding: 0 4px; font-size: inherit; }
+.ctl-body input[type="checkbox"] { accent-color: var(--accent); margin: 0; width: 14px; height: 14px; }
+.ctl-body input[type="color"] { width: 44px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: none; cursor: pointer; }
+.ctl-sep { height: 1px; background: var(--border); margin: 6px 0 4px; }
+.uni-row { display: grid; grid-template-columns: auto auto 1fr; gap: 0 8px; line-height: 1.7; }
+.uni-name { color: var(--text); }
+.uni-type { color: var(--text-dim); font-size: 9.5px; }
+.uni-val { color: var(--ok); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.uni-edit { cursor: text; }
+.uni-val input[type="number"] { width: 7em; height: 18px; text-align: right; font-size: inherit; padding: 0 4px; }   /* outranks the global input rule below */
+.uni-foot { font-size: 9.5px; color: var(--text-dim); margin-top: 4px; }
+.uni-foot b { color: var(--text); font-weight: 500; }
+
+/* ── Status bar (bottom of every pass window) ────────────── */
+.win-status {
+  height: var(--statusbar-h);
+  background: var(--bg1);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.win-status > span { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.win-status .spacer { margin-left: auto; flex: 0 1 auto; }
+.win-status .ibtn { flex-shrink: 0; }
+.win-status .mode { opacity: 0.7; }
+.win-status .rec-time { display: none; color: var(--err); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+body.recording .win-status .rec-time { display: block; }
+
+/* Narrow windows shed readouts, not controls. The width class is set by a ResizeObserver in main.ts. */
+.win.w-lt-560 .win-status .mode { display: none; }
+.win.w-lt-560 .win-status { gap: 8px; padding: 0 8px; }
+.win.w-lt-460 .win-status .res { display: none; }
+.win.w-lt-320 .win-status .fps { display: none; }
+.win.w-lt-360 .win-status .ibtn { width: 20px; }
+.win.w-lt-300 .win-bar .pass-select { font-size: 10px; padding-right: 12px; }
+
+/* Icon buttons: quiet until hovered. */
+.ibtn {
+  width: 24px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.ibtn:hover { color: var(--text); background: var(--bg3); border-color: var(--border); }
+.ibtn.active { color: var(--accent); }
+.ibtn.recording { color: var(--err); animation: rec-pulse 1.2s ease-in-out infinite; }
+.btn-step { display: none; }
+body.paused .btn-step { display: flex; }
+[data-act="pause"] .ic-play { display: none; }
+[data-act="pause"].active .ic-pause { display: none; }
+[data-act="pause"].active .ic-play { display: block; }
+
+/* Pass selector: reads as a label until hovered. */
+.pass-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 16px 2px 6px;
+  margin-left: -6px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 9px) 55%, calc(100% - 5px) 55%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+.pass-select:hover, .pass-select:focus { border-color: var(--border); background-color: var(--bg3); outline: none; }
+.pass-select option { background: var(--bg2); color: var(--text); }
+.pass-select optgroup { background: var(--bg2); color: var(--text-dim); font-style: normal; }
+/* Browsers with customizable select (Chrome 134+, Firefox 142+) draw the list
+   themselves, so it can match the context menu; others keep the native popup. */
+@supports (appearance: base-select) {
+  .pass-select, .pass-select::picker(select) { appearance: base-select; }
+  .pass-select::picker-icon { display: none; }
+  .pass-select::picker(select) {
+    background: var(--bg2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 0; margin-top: 4px; min-width: 140px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    font-family: inherit; font-size: 12px;
+  }
+  .pass-select option { padding: 5px 14px; cursor: pointer; }
+  .pass-select option:hover, .pass-select option:focus-visible { background: var(--bg3); color: var(--text-hi); outline: none; }
+  .pass-select option:checked { color: var(--accent); }
+  .pass-select option::checkmark { display: none; }
+  .pass-select optgroup { padding: 0; }
+  .pass-select optgroup:not(:first-child) { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+}
+
+/* ── Texture strip ───────────────────────────────────────── */
+.texture-strip {
+  height: 56px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.texture-strip::-webkit-scrollbar { height: 3px; }
+.texture-strip::-webkit-scrollbar-thumb { background: var(--border); }
+.strip-label { font-size: 11px; color: var(--text-dim); margin-right: 4px; white-space: nowrap; }
+.win.tool .texture-strip, .win:fullscreen .texture-strip { display: none; }
+
+.tex-slot {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+.tex-slot:hover { border-color: var(--accent); }
+.tex-slot.active, .tex-slot.over { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.tex-slot.over { background: var(--sel); }
+.tex-slot img { width: 100%; height: 100%; object-fit: cover; display: none; }
+.tex-slot img.loaded { display: block; }
+.tex-slot .label {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: color-mix(in srgb, var(--bg0) 78%, transparent);
+  font-size: 9px;
+  text-align: center;
+  padding: 1px 0;
+  color: var(--text-dim);
+}
+.tex-slot .plus { font-size: 16px; color: var(--text-dim); }
+.tex-slot:hover .plus { color: var(--accent); }
+.tex-slot.cube-mode .label { color: var(--accent); }
+
+/* Channel wired to a buffer instead of an image */
+.tex-slot.buf-mode {
+  background: var(--bg0);
+  border-style: dashed;
+  border-color: var(--accent2);
+}
+.tex-slot.buf-mode .plus { font-size: 14px; font-weight: 600; color: var(--accent2); }
+.tex-slot.buf-mode .label { color: var(--accent2); }
+
+input[type="file"] { display: none; }
+
+/* ── Context menu ────────────────────────────────────────── */
+#ctx-menu, .ctx-menu {
+  display: none;
+  position: fixed;
+  z-index: 200;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 140px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  user-select: none;
+}
+#ctx-menu.open, .ctx-menu.open { display: block; }
+.ctx-opts { display: flex; align-items: center; gap: 2px; padding: 3px 10px 3px 14px; font-size: 11px; }
+.ctx-opt-label { color: var(--text-dim); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; margin-right: 6px; min-width: 38px; }
+.fmt-title { padding: 4px 14px 2px; }
+.ctx-opt { padding: 1px 7px; border-radius: 3px; color: var(--text-dim); cursor: pointer; }
+.ctx-opt:hover { background: var(--bg3); color: var(--text); }
+.ctx-opt.ctx-active { color: var(--accent); background: var(--hl); }
+#ctx-vflip.ctx-active::before { content: '✓ '; }
+.ctx-item {
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+.ctx-item:hover { background: var(--bg3); color: var(--text-hi); }
+.ctx-item.ctx-active { color: var(--accent); }
+.ctx-item.ctx-danger:hover { color: var(--err); }
+.ctx-item.ctx-disabled { color: var(--text-dim); opacity: 0.5; cursor: default; }
+.ctx-item.ctx-disabled:hover { background: none; color: var(--text-dim); }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* ── Cube modal, shortcuts sheet ─────────────────────────── */
+#cube-modal, #help-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.6);
+}
+#cube-modal.open, #help-modal.open { display: flex; }
+.cube-modal-inner, .help-inner {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  width: 280px;
+}
+.cube-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+#cube-modal-close, #help-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+#cube-modal-close:hover, #help-close:hover { color: var(--text); }
+.help-inner { width: 380px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; user-select: text; }
+.key-group { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); margin: 10px 0 4px; }
+.key-group:first-of-type { margin-top: 2px; }
+.key-row { display: grid; grid-template-columns: 112px 1fr; gap: 0 10px; align-items: baseline; line-height: 1.7; font-size: 11.5px; }
+.key-row kbd {
+  font-family: inherit; font-size: 10.5px; color: var(--text); white-space: nowrap;
+  background: var(--bg3); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px;
+}
+.key-row span { color: var(--text-dim); }
+.cube-modal-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.cube-modal-hint code {
+  color: var(--ok);
+  font-family: inherit;
+}
+#cube-face-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.cube-face-slot {
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg3);
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.cube-face-slot:hover { border-color: var(--accent); }
+.cube-face-slot img { width: 100%; height: 100%; object-fit: cover; display: none; }
+.cube-face-slot img.loaded { display: block; }
+.cube-face-slot .face-label {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: color-mix(in srgb, var(--bg0) 78%, transparent);
+  font-size: 10px;
+  text-align: center;
+  padding: 2px 0;
+  color: var(--text-dim);
+}
+.cube-face-slot .plus { font-size: 16px; color: var(--text-dim); }
+.cube-face-slot:hover .plus { color: var(--accent); }
+
+/* ── Popover panels (options, shaders) ───────────────────── */
+#options-panel, #shaders-panel {
+  display: none;
+  position: fixed;
+  top: calc(var(--toolbar-h) + 6px);
+  z-index: 300;
+  width: 264px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100dvh - var(--toolbar-h) - 20px);
+  overflow-y: auto;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  padding: 10px 12px 12px;
+}
+#options-panel { right: 10px; }
+#shaders-panel { left: 10px; width: 300px; }
+#options-panel.open, #shaders-panel.open { display: block; }
+
+.opt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+#options-close, #shaders-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+#options-close:hover, #shaders-close:hover { color: var(--text); }
+
+/* Saved shader rows */
+#shader-list { display: flex; flex-direction: column; gap: 3px; max-height: 40vh; overflow-y: auto; }
+.shader-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+.shader-row:hover { background: var(--bg3); border-color: var(--border); }
+.shader-row.current { border-color: var(--accent); }
+.sr-main { flex: 1; min-width: 0; }
+.sr-name { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shader-row.current .sr-name { color: var(--accent); }
+.sr-meta { font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+.sr-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s; }
+.shader-row:hover .sr-actions, .shader-row:focus-within .sr-actions { opacity: 1; }
+@media (pointer: coarse) { .sr-actions { opacity: 1; } }
+.sr-btn {
+  width: 22px; height: 22px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sr-btn:hover { color: var(--text); border-color: var(--border); background: var(--bg2); }
+.sr-btn.sr-danger:hover { color: var(--err); }
+
+.opt-section { margin-bottom: 14px; }
+.opt-section:last-child { margin-bottom: 0; }
+.opt-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.opt-label .opt-val { color: var(--accent); letter-spacing: 0; text-transform: none; font-size: 11px; }
+.opt-hint { font-size: 10px; color: var(--text-dim); line-height: 1.5; margin-top: 5px; }
+
+/* Rows wrap rather than push past the panel's edge: three buttons do not fit 264px. */
+.opt-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.opt-row .btn { flex: 1 1 auto; justify-content: center; }
+
+input[type="number"], input[type="text"] {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  accent-color: var(--accent);
+  user-select: text;
+}
+input.bad { border-color: var(--err) !important; }
+input[type="number"]:focus, input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.opt-slider { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--text-dim); }
+.opt-slider[hidden] { display: none; }
+.opt-slider input[type="range"] { flex: 1; min-width: 0; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.opt-slider .opt-val { min-width: 34px; text-align: right; }
+
+/* The theme list is long, so it folds behind a one-line summary. */
+#opt-theme > summary { cursor: pointer; list-style: none; margin-bottom: 0; }
+#opt-theme > summary::-webkit-details-marker { display: none; }
+#opt-theme > summary .opt-val::after { content: "▸"; display: inline-block; margin-left: 5px; color: var(--text-dim); transition: transform 0.15s; }
+#opt-theme[open] > summary .opt-val::after { transform: rotate(90deg); }
+#opt-theme > summary:hover { color: var(--text); }
+#opt-theme[open] > summary { margin-bottom: 6px; }
+.opt-sublabel { font-size: 10px; color: var(--text-dim); margin: 8px 0 5px; }
+.opt-sublabel:first-child { margin-top: 2px; }
+.theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.theme-swatch {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 6px;
+  background: var(--bg3);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: inherit;
+  text-align: left;
+  transition: border-color 0.15s;
+}
+.theme-swatch:hover { border-color: var(--accent); }
+.theme-swatch.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-swatch .tname { font-size: 10px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.theme-swatch .dots { display: flex; gap: 3px; }
+.theme-swatch .dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+
+/* ── Mobile layout ───────────────────────────────────────── */
+/* Phones in landscape are short rather than narrow: they keep the
+   side-by-side panes but get the same compact, touch-sized chrome. */
+@media (max-width: 768px), (max-height: 500px) {
+  #toolbar {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #toolbar::-webkit-scrollbar { display: none; }
+  #btn-shaders { max-width: 140px; }
+
+  .btn { height: 32px; padding: 0 12px; }
+  #btn-compile .lbl { display: none; }   /* the play icon says it */
+
+  #error-log { max-height: 90px; }
+  #shaders-panel { left: 10px; }
+
+  /* 16px stops iOS zooming on editor focus */
+  .cm-editor { font-size: 16px; }
+
+  .tex-slot { width: 44px; height: 44px; }
+  .texture-strip { height: 60px; }
+}
+
+@media (max-width: 768px) and (orientation: portrait) {
+  #main { flex-direction: column; }
+  #main.swapped { flex-direction: column-reverse; }
+
+  #editor-pane {
+    width: 100% !important;   /* override inline width set by divider drag */
+    min-width: 0;
+    height: 45%;
+    min-height: 120px;
+  }
+
+  #divider {
+    width: 100%;
+    height: var(--divider-w);
+    cursor: row-resize;
+  }
+  #divider::after { inset: -6px 0; }
+
+  #dock { min-width: 0; min-height: 100px; overflow-y: auto; }
+
+  /* A floating editor makes no sense stacked on a phone: render docked, keep the setting. */
+  #main > .floating {
+    position: static;
+    width: auto !important;
+    flex: 1;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    animation: none;
+  }
+  #main > .floating > .float-bar, #main > .floating .fh { display: none; }
+  #main.editor-floating #divider { display: block; }
+  #editor-pane.floating { height: 45% !important; flex: none; }
+  #main.dock-empty.editor-floating::after { display: none; }
+  #btn-editor-undock { display: none; }
+
+  /* Windows all stack in the dock (main.ts places them there); each keeps a usable height. */
+  .win.docked { flex: 1 0 auto; min-height: 45dvh; }
+  .win .win-bar { height: 36px; }
+  .win input, .win textarea { font-size: 16px; }   /* no iOS zoom */
+  .win .calc-row, .win .calc-help { font-size: 13px; }
+  .win #uni-body { font-size: 12px; }
+}
+
+/* Touch: every control the thumb has to hit is at least 32px tall. */
+@media (pointer: coarse) {
+  .ibtn { width: 34px; height: 32px; }
+  .float-btn { height: 30px; padding: 0 10px; }
+  .pass-close { padding: 8px 10px; opacity: 0.7; font-size: 12px; }
+  .pass-add { min-width: 36px; min-height: 32px; }
+  .pass-select { min-height: 32px; }
+  #options-close, #shaders-close { min-width: 36px; min-height: 36px; }
+  .win .win-bar { height: 40px; }
+}
+
+/* Narrow portrait: the toolbar must fit without scrolling, so the three
+   window buttons go icon-only and the logo steps aside. */
+@media (max-width: 480px) and (orientation: portrait) {
+  #toolbar .logo { display: none; }
+  #btn-new-preview .lbl, #btn-new-view .lbl, #btn-options .lbl { display: none; }
+  #btn-new-preview, #btn-new-view, #btn-options { padding: 0 10px; }
+  #btn-new-preview svg, #btn-new-view svg, #btn-options svg { width: 15px; height: 15px; }
+  #btn-shaders { max-width: 110px; }
+  #toolbar { gap: 6px; padding: 0 8px; }
+  #toolbar .sep { display: none; }
+  #btn-autocompile { padding: 0 9px; }
+  /* The status pill shrinks to a coloured dot; the error log says the rest. */
+  #compile-status { width: 12px; height: 12px; padding: 0; border-radius: 6px; font-size: 0; }
+}
+
+/* Short landscape screens: the texture strip costs too much height. */
+@media (max-height: 500px) {
+  .tex-slot { width: 38px; height: 38px; }
+  .texture-strip { height: 48px; }
+}
+
+/* Firefox has no ::-webkit-scrollbar; the standard properties give it the same thin, quiet bar. */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <span class="logo">GLSL</span>
+  <button class="btn" id="btn-shaders" title="Saved shaders">
+    <span class="chev">▾</span>
+    <span id="btn-shader-name">Untitled</span>
+    <span class="dirty-dot"></span>
+  </button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-compile" title="Compile (Ctrl+Enter)">
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11"/></svg>
+    <span class="lbl">Compile</span>
+  </button>
+  <button class="btn active" id="btn-autocompile" title="Toggle auto-compile">Auto</button>
+  <span id="compile-status" class="pill ok">OK</span>
+  <div class="spacer"></div>
+  <button class="btn" id="btn-new-preview" title="Open a preview window: a pass with playback, channels, screenshot and recording">
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 2h10v8H1zM1 7.5h10M4 7.5v2.5"/></svg>
+    <span class="lbl">Preview</span>
+  </button>
+  <button class="btn" id="btn-new-view" title="Open a view window: just a pass or a tool (Ctrl+Shift+V)">
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 4.5V11h6.5M4 1h7v7H4zM7.5 2.75v3.5M5.75 4.5h3.5"/></svg>
+    <span class="lbl">View</span>
+  </button>
+  <button class="btn" id="btn-options" title="Options">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+      <circle cx="8" cy="8" r="2.2"/>
+      <path d="M8 1.2v1.8M8 13v1.8M1.2 8h1.8M13 8h1.8M3.2 3.2l1.3 1.3M11.5 11.5l1.3 1.3M12.8 3.2l-1.3 1.3M4.5 11.5l-1.3 1.3"/>
+    </svg>
+    <span class="lbl">Options</span>
+  </button>
+</div>
+
+<div id="shaders-panel">
+  <div class="opt-header">
+    <span>Shaders</span>
+    <button id="shaders-close" title="Close">✕</button>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Current <span class="opt-val" id="shaders-state">unsaved</span></div>
+    <input type="text" id="shader-name" placeholder="Shader name" maxlength="64" spellcheck="false">
+    <div class="opt-row" style="margin-top:6px">
+      <button class="btn" id="shader-save" title="Save (Ctrl+S)">Save</button>
+      <button class="btn" id="shader-copy" title="Save as a new entry (Ctrl+Shift+S)">Save copy</button>
+      <button class="btn" id="shader-new" title="Start a blank shader">New</button>
+    </div>
+    <div class="opt-row" style="margin-top:6px">
+      <button class="btn" id="btn-export" title="Download every pass as one .glsl file">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1v7M3 5l3 3 3-3M1 9v2h10V9"/></svg>
+        Export .glsl
+      </button>
+      <button class="btn" id="btn-import" title="Open a .glsl file: one exported from here (all passes and wiring) or any mainImage shader">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 8V1M3 4l3-3 3 3M1 9v2h10V9"/></svg>
+        Import .glsl
+      </button>
+      <input type="file" id="import-file" accept=".glsl,.frag,.fs,.txt,text/plain" hidden>
+    </div>
+    <div class="opt-hint">Ctrl+S saves. Your work is autosaved as you type either way; saving keeps a named snapshot in this browser. Uploaded images aren't kept.</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Saved <span class="opt-val" id="shaders-count"></span></div>
+    <div id="shader-list"></div>
+  </div>
+</div>
+
+<div id="options-panel">
+  <div class="opt-header">
+    <span>Options</span>
+    <button id="options-close" title="Close">✕</button>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Resolution scale <span class="opt-val" id="opt-res-val">100%</span></div>
+    <input type="number" id="opt-res" min="0.01" max="1" step="0.05" value="1">
+    <div class="opt-hint">Multiplier from 0 to 1. Scales the render framebuffer only — canvas keeps its on-screen size. Lower values help struggling devices.</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Screenshot size <span class="opt-val" id="opt-shot-val"></span></div>
+    <input type="text" id="opt-shot" value="1x" spellcheck="false" placeholder="1x · 2x · 1920x1080">
+    <div class="opt-hint">For the camera button: a multiple of the preview, or an exact size. Buffers restart at a different size, so simulations capture their first frame.</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Layout</div>
+    <div class="opt-row">
+      <button class="btn" id="opt-layout-normal">Editor 1st</button>
+      <button class="btn" id="opt-layout-swap">Windows 1st</button>
+    </div>
+    <div class="opt-hint">Swaps the editor and the docked windows (left/right on desktop, top/bottom when stacked).</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Editor</div>
+    <div class="opt-row">
+      <button class="btn" id="opt-vim">Vim mode</button>
+      <button class="btn" id="opt-keys" title="Keyboard shortcuts (?)">Shortcuts</button>
+      <button class="btn" id="opt-redraw" title="Rebuild the editor's display from the stored code (Ctrl+Alt+R in the editor); the text, cursor and undo history stay">Redraw editor</button>
+    </div>
+    <div class="opt-hint">If the code on screen ever stops matching what you typed, Redraw rebuilds the view without a reload.</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Editor background <span class="opt-val" id="opt-glass-val"></span></div>
+    <div class="opt-row" id="opt-glass-modes">
+      <button class="btn" data-glass="solid">Solid</button>
+      <button class="btn" data-glass="tint">Tint</button>
+      <button class="btn" data-glass="clear">Clear</button>
+      <button class="btn" data-glass="glass">Glass</button>
+    </div>
+    <div class="opt-slider" id="opt-glass-tint-row">
+      <span>Opacity</span><input type="range" id="opt-glass-tint" min="0" max="1" step="0.05"><span class="opt-val" id="opt-glass-tint-val"></span>
+    </div>
+    <div class="opt-slider" id="opt-glass-frost-row">
+      <span>Frost</span><input type="range" id="opt-glass-frost" min="0" max="40" step="1"><span class="opt-val" id="opt-glass-frost-val"></span>
+    </div>
+    <div class="opt-hint">While the editor is undocked, its backgrounds go see-through so a window behind shows through the code. Text stays as it is.</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-label">Auto-compile delay <span class="opt-val" id="opt-delay-val">600 ms</span></div>
+    <input type="number" id="opt-delay" min="0" max="5000" step="50" value="600">
+    <div class="opt-hint">Pause after typing before the shader recompiles. 0 compiles on every keystroke. Ctrl+Enter always compiles at once.</div>
+  </div>
+
+  <details class="opt-section" id="opt-theme">
+    <summary class="opt-label">Theme <span class="opt-val" id="opt-theme-val"></span></summary>
+    <div id="opt-theme-grid">
+      <div class="opt-sublabel">Dark</div>
+      <div class="theme-grid" id="opt-theme-dark"></div>
+      <div class="opt-sublabel">Light</div>
+      <div class="theme-grid" id="opt-theme-light"></div>
+    </div>
+  </details>
+
+  <div class="opt-section">
+    <div class="opt-label">Project</div>
+    <div class="opt-row">
+      <button class="btn" id="opt-restore">Restore example</button>
+    </div>
+    <div class="opt-hint">Loads the reaction–diffusion example. Named shaders live under the ▾ menu in the toolbar.</div>
+  </div>
+
+  <div class="opt-section">
+    <div class="opt-row">
+      <button class="btn" id="opt-reset">Reset settings</button>
+    </div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="editor-pane">
+    <div id="editor-bar" class="float-bar">
+      <span class="grip-dots"></span>
+      <span class="float-title">Editor</span>
+      <button class="float-btn" id="editor-dock" title="Dock editor (double-click the bar also docks)">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 1h10v10H1zM6 1v10"/></svg>
+        Dock
+      </button>
+    </div>
+    <div id="pass-tabs">
+      <button class="ibtn" id="btn-editor-undock" title="Undock editor into a floating window">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1 4.5V11h6.5M4 1h7v7H4z"/></svg>
+      </button>
+    </div>
+    <div id="error-log">
+      <div id="error-title"></div>
+      <div id="error-body"></div>
+    </div>
+    <div id="editor-wrap"></div>
+    <div class="fh fh-n" data-dir="n"></div><div class="fh fh-s" data-dir="s"></div>
+    <div class="fh fh-w" data-dir="w"></div><div class="fh fh-e" data-dir="e"></div>
+    <div class="fh fh-nw" data-dir="nw"></div><div class="fh fh-ne" data-dir="ne"></div>
+    <div class="fh fh-sw" data-dir="sw"></div><div class="fh fh-se" data-dir="se"></div>
+  </div>
+
+  <div id="divider"></div>
+
+  <!-- Docked windows stack here; floating ones live on body. Filled by JS. -->
+  <div id="dock"></div>
+</div>
+
+<input type="file" id="file-input" accept="image/*">
+
+<!-- The one WebGL canvas. Never shown: each pass window copies the frame out of it. -->
+<canvas id="glcanvas"></canvas>
+
+<div id="help-modal">
+  <div class="help-inner">
+    <div class="cube-modal-header">
+      <span>Keyboard</span>
+      <button id="help-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="key-group">Preview</div>
+    <div class="key-row"><kbd>Space</kbd><span>pause / resume</span></div>
+    <div class="key-row"><kbd>.</kbd><span>step one frame while paused (Shift: 10; the step button with Ctrl: 100)</span></div>
+    <div class="key-row"><kbd>i</kbd><span>pixel inspector; click the preview to freeze, click the readout to copy</span></div>
+    <div class="key-group">Code</div>
+    <div class="key-row"><kbd>Ctrl Enter</kbd><span>compile now</span></div>
+    <div class="key-row"><kbd>Alt 1 … 8</kbd><span>switch pass tab, in the order shown</span></div>
+    <div class="key-row"><kbd>Ctrl /</kbd><span>toggle comment</span></div>
+    <div class="key-row"><kbd>Ctrl Alt R</kbd><span>redraw the editor if its display drifts from the text</span></div>
+    <div class="key-row"><kbd>Shift Alt F</kbd><span>format the code: indentation and spacing, lines kept (<kbd>:format</kbd> in vim mode; <kbd>:'&lt;,'&gt;format</kbd> for a range)</span></div>
+    <div class="key-row"><kbd>F1</kbd><span>reference card for the built-in under the cursor (<kbd>K</kbd> in vim normal mode)</span></div>
+    <div class="key-row"><kbd>Ctrl S</kbd><span>save to the shader list; <kbd>Ctrl Shift S</kbd> saves a copy</span></div>
+    <div class="key-group">Windows</div>
+    <div class="key-row"><kbd>Ctrl Shift V</kbd><span>open a view (docked when nothing is, floating otherwise); Preview in the toolbar opens the full kind</span></div>
+    <div class="key-row"><kbd>Esc</kbd><span>close the front-most menu, panel or floating window</span></div>
+    <div class="key-row"><kbd>Alt</kbd><span>while dragging a window: no edge snapping</span></div>
+    <div class="key-row"><kbd>double-click</kbd><span>a floating window's bar: tile it; the editor's bar: dock it</span></div>
+    <div class="key-group">Channels</div>
+    <div class="key-row"><kbd>drop</kbd><span>an image file onto a slot to load it; right-click a slot for sampling</span></div>
+    <div class="key-row"><kbd>?</kbd><span>this sheet</span></div>
+  </div>
+</div>
+
+<!-- Uniform table: parked here, moved into whichever view window shows it. -->
+<div id="uni-body" hidden>
+  <div id="uni-controls" hidden></div>
+  <!-- rows filled by JS -->
+  <div class="uni-foot">channels of <b id="uni-pass">Image</b> · hover a built-in in the editor for its docs</div>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
