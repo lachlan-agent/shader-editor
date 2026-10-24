@@ -24,6 +24,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The calculator test cases are checked against numpy (test/cases.py).
+      - run: pip install numpy
       - run: npm test
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
